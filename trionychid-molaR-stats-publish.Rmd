@@ -1,0 +1,346 @@
+---
+title: "Trionychid molaR Processing and Statistics Code"
+author: "Alex Pamfilie"
+date: "5/14/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Packages and Libraries Needed
+```{r}
+library(molaR) #for calculating DNE, RFI, and OPCR
+library(readxl) #for reading in an excel file
+library(dplyr, tibble) #for data cleaning and organization
+library(MASS) #for running LDA
+library(effectsize) #for calculating partial eta squared
+library(caret,e1071) #for confusion matrix
+library(Rvcg,ggplot2) #for figures
+library(RColorBrewer,pals) #for figure colors
+library(tidyr) #for reorganizing data for figures
+```
+
+
+Generating DNE, RFI, OPCR, and alpha values for scans (commented out; molar_batch.csv included in directory):
+```{r}
+#folder<-"C:/Users/apamf/OneDrive - Stony Brook University/Documents/A Stony Brook University/Trionychid Turtle Structure/samples_aligned"
+#setwd(folder)
+
+#molaR_Batch(filename="../molaR_Batch.csv",RFI_alpha=0.2,OPCr=TRUE,DNE=TRUE,RFI=TRUE,Slope=TRUE) #RFI value based on initial tests
+#molaR.data<-read.csv("molaR_Batch.csv") #Manually added final column that notes if file required cleaning or adjustment
+```
+
+Reading in information on samples/specimens and combining into one sheet
+```{r}
+wd<-"C:/Users/apamf/OneDrive - Stony Brook University/Documents/A Stony Brook University/Trionychid Turtle Structure/Trionychid-strugure-git"
+setwd(wd)
+all.specs<-subset(read_excel('Trionychidae_carapace_scan.xlsx',sheet=1,col_names=T),select=c(1:6,10))
+molaR.data<-read.csv("molaR_batch.csv") #for reading in the copy in the git repository
+
+for (i in 1:nrow(molaR.data)) {
+  if (is.na(molaR.data[i,7]) == TRUE) {
+    molaR.data[i,7]<-FALSE
+  }
+} #Fill out column on if file required cleaning
+
+molaR.data.info<-molaR.data[,1]
+molaR.data.info<-data.frame(do.call('rbind',strsplit(as.character(molaR.data.info),'-',fixed=T)))
+for (i in 1:nrow(molaR.data.info)) {
+  if (molaR.data.info[i,6] == 'L_aligned.ply') {
+    molaR.data.info[i,6]<-'L'
+  } else if (molaR.data.info[i,6] == 'R_aligned.ply') {
+    molaR.data.info[i,6]<-'R'
+  }
+} #Spread out long form name into columns that can be easily accessed
+
+molaR.data<-cbind(molaR.data.info,molaR.data) #Rebind data on DTAs
+
+all.specs$Files<-paste(all.specs$SpecimenName,round(all.specs$AnteriorDistance),round(all.specs$LateralDistance),all.specs$Side,sep='-') 
+all.specs$Files<-paste(all.specs$Files,'aligned.ply',sep='_') #Generate a column of file names to match molaR.data
+
+all.data<-merge(all.specs,molaR.data,by='Files',all.x=T) #Merge molaR.data and specimen data files
+
+#Corrections for where the code above didn't quite work, due to rounding error, typos, or later removal of data
+all.data[c(420,421,423),c(9:20)]<-NA
+all.data[99,c(9:20)]<-molaR.data[96,c(1:6,8:13)]
+all.data[448,c(9:20)]<-molaR.data[416,c(1:6,8:13)]
+```
+
+Cleaning the "all.data" spreadsheet
+```{r}
+for (i in 1:nrow(all.data)) {
+  if (is.na(all.data[i,7]) == TRUE) {
+    all.data[i,7]<-FALSE
+  } else if (all.data[i,7] == "YES") {
+    all.data[i,7]<-TRUE
+  }
+} #Make "Excluded" column readable (in T/F format)
+
+all.data<-subset(all.data,select=-c(X1:X6)) #Remove extra columns
+```
+
+Adding body size and species columns
+```{r}
+#Generate lists of specimen numbers for each species
+cartilaginea.list<-c('UF-H-57728')
+ferox.list<-c('UF-H-14114','UF-H-19011','UF-H-40534','UF-H-53383','UF-H-143696','UF-H-150407')
+punctata.list<-c('UF-H-56017')
+spinifera.list<-c('UF-H-37228','UF-H-43889','UF-H-45356','UF-H-48257','UF-H-102169','UF-H-108856','UF-H-120930')
+
+#Create empty data frames to take data on body size and species
+df.species<-data.frame()
+df.costalL<-data.frame()
+df.totalSL<-data.frame()
+
+#A loop to generate dfs of species and body size metrics in the order present in all.data
+for (i in 1:nrow(all.data)) {
+  if ((all.data[i,2] %in% cartilaginea.list) == T) {
+    df.species[i,1]<-"cartilaginea"
+    df.costalL[i,1]<-152.04
+    df.totalSL[i,1]<-171.81
+  } else if ((all.data[i,2] %in% punctata.list) == T) {
+    df.species[i,1]<-"punctata"
+    df.costalL[i,1]<-154.2
+    df.totalSL[i,1]<-177.27
+  } else if ((all.data[i,2] %in% ferox.list) == T) {
+    df.species[i,1]<-"ferox"
+    if (all.data[i,2] == 'UF-H-14114') {
+      df.costalL[i,1]<-192.04
+      df.totalSL[i,1]<-219.3
+    } else if (all.data[i,2] == 'UF-H-19011') {
+      df.costalL[i,1]<-202.38
+      df.totalSL[i,1]<-226.09
+    } else if (all.data[i,2] == 'UF-H-40534') {
+      df.costalL[i,1]<-167.72
+      df.totalSL[i,1]<-193.58
+    } else if (all.data[i,2] == 'UF-H-53383') {
+      df.costalL[i,1]<-157.84
+      df.totalSL[i,1]<-179.45
+    } else if (all.data[i,2] == 'UF-H-143696') {
+      df.costalL[i,1]<-169.44
+      df.totalSL[i,1]<-193.01
+    } else if (all.data[i,2] == 'UF-H-150407') {
+      df.costalL[i,1]<-260.1
+      df.totalSL[i,1]<-298.84
+    }
+  } else if ((all.data[i,2] %in% spinifera.list) == T) {
+    df.species[i,1]<-"spinifera"
+    if (all.data[i,2] == 'UF-H-37228') {
+      df.costalL[i,1]<-166.05
+      df.totalSL[i,1]<-184.52
+    } else if (all.data[i,2] == 'UF-H-43889') {
+      df.costalL[i,1]<-140.14
+      df.totalSL[i,1]<-156.34
+    } else if (all.data[i,2] == 'UF-H-45356') {
+      df.costalL[i,1]<-143.21
+      df.totalSL[i,1]<-164.54
+    } else if (all.data[i,2] == 'UF-H-48257') {
+      df.costalL[i,1]<-99.13
+      df.totalSL[i,1]<-113.41
+    } else if (all.data[i,2] == 'UF-H-102169') {
+      df.costalL[i,1]<-156.36
+      df.totalSL[i,1]<-172.82
+    } else if (all.data[i,2] == 'UF-H-108856') {
+      df.costalL[i,1]<-166.71
+      df.totalSL[i,1]<-186.54
+    } else if (all.data[i,2] == 'UF-H-120930') {
+      df.costalL[i,1]<-182.94
+      df.totalSL[i,1]<-207
+    }
+  }
+}
+
+#Combine the species and body size data frames with all.data
+all.data<-add_column(all.data,df.species,.after=1)
+all.data<-add_column(all.data,df.costalL,.after=2)
+all.data<-add_column(all.data,df.totalSL,.after=3)
+all.data<-rename(all.data,Species = V1)
+all.data<-rename(all.data,CostalCarapaceLengthMM = V1.1)
+all.data<-rename(all.data,TotalSLCarapaceLengthMM = V1.2)
+
+write.csv(all.data,"all_data_raw_trionychid.csv")
+```
+
+Add Specimen Number column and additional cleaning
+```{r}
+spec.replace<-function(dframe) {
+  library(tibble)
+  dframe<-add_column(dframe,SpecimenNo=NA,.after="SpecimenName")
+  for (i in 1:nrow(dframe)) {
+    if (dframe[i,5] == "UF-H-57728") {
+      dframe[i,6]<-1
+    } else if (dframe[i,5] == "UF-H-14114") {
+      dframe[i,6]<-1
+    } else if (dframe[i,5] == "UF-H-19011") {
+      dframe[i,6]<-2
+    } else if (dframe[i,5] == "UF-H-40534") {
+      dframe[i,6]<-3
+    } else if (dframe[i,5] == "UF-H-53383") {
+      dframe[i,6]<-4
+    } else if (dframe[i,5] == "UF-H-143696") {
+      dframe[i,6]<-5
+    } else if (dframe[i,5] == "UF-H-150407") {
+      dframe[i,6]<-6
+    } else if (dframe[i,5] == "UF-H-37228") {
+      dframe[i,6]<-1
+    } else if (dframe[i,5] == "UF-H-43889") {
+      dframe[i,6]<-2
+    } else if (dframe[i,5] == "UF-H-45356") {
+      dframe[i,6]<-3
+    } else if (dframe[i,5] == "UF-H-102169") {
+      dframe[i,6]<-4
+    } else if (dframe[i,5] == "UF-H-108856") {
+      dframe[i,6]<-5
+    } else if (dframe[i,5] == "UF-H-120930") {
+      dframe[i,6]<-6
+    }
+  }
+  return(dframe)
+}
+
+all.data<-subset(all.data, is.na(DNE)==F, select=c(Files:Costal,DNE:Slope)) #Remove excluded rows/samples and remove the excluded and notes columns
+all.data<-spec.replace(all.data) #Add column for specimen number (as in count)
+
+all.data$Species<-factor(all.data$Species)
+all.data$SpecimenName<-factor(all.data$SpecimenName)
+all.data$Side<-factor(all.data$Side)
+all.data$Costal<-factor(all.data$Costal)
+all.data$SpecimenNo<-factor(all.data$SpecimenNo)
+```
+
+Adding standardized DNE, RFI, and OPCR columns
+```{r}
+metrics.std<-data.frame("DNE.std"=(sqrt(all.data$DNE)-mean(sqrt(all.data$DNE)))/sd(sqrt(all.data$DNE)), "RFI.std"=(sqrt(all.data$RFI)-mean(sqrt(all.data$RFI)))/sd(sqrt(all.data$RFI)), "OPCR.std"=(all.data$OPCR-mean(all.data$OPCR))/sd(all.data$OPCR))
+all.data<-cbind(all.data,metrics.std)
+#DNE and RFI both square root normalized as well as standardized; OPCR just standardized
+```
+
+Function for assessing the correctness of the LDA
+```{r}
+percent.correct<-function(col1,col2) {
+  pc.counter<-0
+  pc.incorrect.counter<-0
+  for (j in 1:length(col1)) {
+    if (col1[j] == col2[j]) {
+      pc.counter<-pc.counter+1
+    } else {
+      pc.incorrect.counter<-pc.incorrect.counter+1
+    }
+  }
+  pc.final<-pc.counter/length(col1)
+  pc.check<-pc.counter+pc.incorrect.counter
+  return(pc.final)
+  return(boolean(pc.check == length(col1)))
+}
+```
+
+MANOVA and LDA
+```{r}
+manova<-aov(cbind(DNE.std,RFI.std,OPCR.std)~(Species-1)/(SpecimenNo-1)/(Costal-1),all.data)
+manova
+summary(manova)
+
+lda.raw<-lda(Species ~ DNE + RFI + OPCR, all.data, CV=T)
+summary(lda.raw)
+percent.correct(all.data$Species,lda.raw$class)
+lda.std<-lda(Species ~ DNE.std + RFI.std + OPCR.std, all.data, CV=T)
+summary(lda.std)
+percent.correct(all.data$Species,lda.std$class)
+#Raw and standardized data tried in two different LDA analyses; results appear similar and standardized data are used
+posterior.table.std<-cbind(all.data$Files,as.character(all.data$Species),as.character(all.data$SpecimenName),lda.std$posterior)
+```
+
+Tests for allometric relationships between DTAs and body size
+```{r}
+#Creating data subsets for the two species with multiple individuals
+all.data.ferox<-subset(all.data,Species=='ferox')
+all.data.spinifera<-subset(all.data,Species=='spinifera')
+
+#A. ferox allometry tests for DNE, RFI, and OPCR
+cor.test(sort(unique(all.data.ferox$CostalCarapaceLengthMM)),tapply(all.data.ferox$DNE.std,all.data.ferox$CostalCarapaceLengthMM,mean)) #p=0.0015*, r=-0.97
+cor.test(sort(unique(all.data.ferox$CostalCarapaceLengthMM)),tapply(all.data.ferox$RFI.std,all.data.ferox$CostalCarapaceLengthMM,mean)) #p=0.021, r=-0.88
+cor.test(sort(unique(all.data.ferox$CostalCarapaceLengthMM)),tapply(all.data.ferox$OPCR.std,all.data.ferox$CostalCarapaceLengthMM,mean)) #p=0.0078*, r=-0.93
+
+#A. spinifera allometry tests for DNE, RFI, and OPCR
+cor.test(sort(unique(all.data.spinifera$CostalCarapaceLengthMM)),tapply(all.data.spinifera$DNE.std,all.data.spinifera$CostalCarapaceLengthMM,mean)) #p=0.87, r=-0.083
+cor.test(sort(unique(all.data.spinifera$CostalCarapaceLengthMM)),tapply(all.data.spinifera$RFI.std,all.data.spinifera$CostalCarapaceLengthMM,mean)) #p=0.374, r=0.45
+cor.test(sort(unique(all.data.spinifera$CostalCarapaceLengthMM)),tapply(all.data.spinifera$OPCR.std,all.data.spinifera$CostalCarapaceLengthMM,mean)) #p=0.0017*, r=-0.97
+
+#Bonferroni p-value
+0.05/6
+```
+
+Effect size and confusion matrix
+```{r}
+eta.manova<-eta_squared(manova,partial=T,ci=0.95)
+eta.manova
+
+con.matrix<-confusionMatrix(lda.std$class,reference=all.data$Species)
+con.matrix #confirms accuracy of 75.2% > 48.7%, also gives kappa value
+```
+
+Publication Figures
+```{r}
+#Figure 2 example colored scans
+DNE3d(DNE(vcgPlyRead('../samples_aligned/UF-H-120930-87-71-R_aligned.ply')),setRange=c(0,3.6)) #high
+DNE3d(DNE(vcgPlyRead('../samples_aligned/UF-H-150407-131-35-L_aligned.ply')),setRange=c(0,3.6)) #low
+
+RFI3d(RFI(vcgPlyRead('../samples_aligned/UF-H-57728-18-21-L_aligned_adj.ply'),alpha=0.2),FootColor='blue') #high
+RFI3d(RFI(vcgPlyRead('../samples_aligned/UF-H-150407-12-79-L_aligned.ply'),alpha=0.2),FootColor='blue') #low
+
+OPC3d(OPC(vcgPlyRead('../samples_aligned/UF-H-45356-111-34-R_aligned.ply'))) #high
+OPC3d(OPC(vcgPlyRead('../samples_aligned/UF-H-150407-161-29-L_aligned.ply'))) #low
+
+#Figure 3 strip plot
+all.data.graphical<-pivot_longer(all.data,cols=c(DNE.std,RFI.std,OPCR.std),names_to="Metric")
+
+paper3<-ggplot(data=all.data.graphical,mapping=aes(x=factor(Metric),y=value,fill=Species)) +
+  geom_dotplot(binaxis="y", stackdir="center", dotsize=0.85, stroke=NA, stackratio=0.7, position="dodge", binwidth=0.1) +
+  scale_fill_brewer(palette='Dark2') +
+  xlab("Dental Topographic Metric") + ylab("Value") +
+  scale_x_discrete(limits=c("DNE.std","RFI.std","OPCR.std"),labels=c("DNE.std"="DNE","RFI.std"="RFI","OPCR.std"="OPCR")) +
+  theme(plot.background=element_rect(fill="white",colour=NA),
+        panel.background=element_rect(fill='white',colour=NA),
+        panel.grid=element_line(colour='gray50'))
+
+#Figure 4 LDA plot
+lda.std.noCV<-lda(Species ~ DNE.std + RFI.std + OPCR.std, all.data) #redo LDA without cross-validation
+lda.std.noCV.values<-predict(lda.std.noCV)
+
+paper4.df<-data.frame(cbind("Species"=as.character(all.data$Species),predict(lda.std.noCV)$x))
+paper4.df<-transform(paper4.df,LD1=as.numeric(LD1),LD2=as.numeric(LD2)) #create data frame for figure 4 data and organize
+
+palette.spp<-brewer.pal(n=6,"Dark2")[4:6]
+
+paper4<-ggplot(paper4.df, aes(LD1,LD2)) +
+  geom_point(aes(color=Species)) +
+  scale_color_manual(values=palette.spp) +
+  theme(plot.background=element_rect(fill="white",colour=NA),
+        panel.background=element_rect(fill='white',colour=NA),
+        panel.grid=element_line(colour='gray50'))
+
+#Figure 5 data organization
+all.data.graphical.minus.cartilaginea<-subset(all.data.graphical,Species!="cartilaginea") #Remove the one A. cartilaginea sample
+
+paper5.mean<-rbind(tapply(all.data.ferox$DNE.std,all.data.ferox$CostalCarapaceLengthMM,mean),tapply(all.data.ferox$RFI.std,all.data.ferox$CostalCarapaceLengthMM,mean),tapply(all.data.ferox$OPCR.std,all.data.ferox$CostalCarapaceLengthMM,mean),tapply(all.data.spinifera$DNE.std,all.data.spinifera$CostalCarapaceLengthMM,mean),tapply(all.data.spinifera$RFI.std,all.data.spinifera$CostalCarapaceLengthMM,mean),tapply(all.data.spinifera$OPCR.std,all.data.spinifera$CostalCarapaceLengthMM,mean)) #Generate list of means for all species/DTA combinations
+
+paper5.mins<-rbind(tapply(all.data.ferox$DNE.std,all.data.ferox$CostalCarapaceLengthMM,min),tapply(all.data.ferox$RFI.std,all.data.ferox$CostalCarapaceLengthMM,min),tapply(all.data.ferox$OPCR.std,all.data.ferox$CostalCarapaceLengthMM,min),tapply(all.data.spinifera$DNE.std,all.data.spinifera$CostalCarapaceLengthMM,min),tapply(all.data.spinifera$RFI.std,all.data.spinifera$CostalCarapaceLengthMM,min),tapply(all.data.spinifera$OPCR.std,all.data.spinifera$CostalCarapaceLengthMM,min)) #Generate list of minima for all species/DTA combinations
+
+paper5.maxes<-rbind(tapply(all.data.ferox$DNE.std,all.data.ferox$CostalCarapaceLengthMM,max),tapply(all.data.ferox$RFI.std,all.data.ferox$CostalCarapaceLengthMM,max),tapply(all.data.ferox$OPCR.std,all.data.ferox$CostalCarapaceLengthMM,max),tapply(all.data.spinifera$DNE.std,all.data.spinifera$CostalCarapaceLengthMM,max),tapply(all.data.spinifera$RFI.std,all.data.spinifera$CostalCarapaceLengthMM,max),tapply(all.data.spinifera$OPCR.std,all.data.spinifera$CostalCarapaceLengthMM,max)) #Generate list of maxima for all species/DTA combinations
+
+paper5.sizes<-rbind(sort(unique(all.data.ferox$CostalCarapaceLengthMM)),sort(unique(all.data.spinifera$CostalCarapaceLengthMM))) #Organize body size data
+
+paper5.df<-data.frame(cbind("CostalCarapaceLengthMM"=c(paper5.sizes[1,],paper5.sizes[1,],paper5.sizes[1,],paper5.sizes[2,],paper5.sizes[2,],paper5.sizes[2,]),"Species"=c(rep("A. ferox",18),rep("A. spinifera",18)),"Metric"=c(rep("DNE",6),rep("RFI",6),rep("OPCR",6),rep("DNE",6),rep("RFI",6),rep("OPCR",6)),"Mean"=c(paper5.mean[1,],paper5.mean[2,],paper5.mean[3,],paper5.mean[4,],paper5.mean[5,],paper5.mean[6,]),"Min"=c(paper5.mins[1,],paper5.mins[2,],paper5.mins[3,],paper5.mins[4,],paper5.mins[5,],paper5.mins[6,]),"Max"=c(paper5.maxes[1,],paper5.maxes[2,],paper5.maxes[3,],paper5.maxes[4,],paper5.maxes[5,],paper5.maxes[6,]))) #Combine means, minima, maxima, body sizes, etc. into one data frame
+
+paper5.df<-transform(paper5.df,CostalCarapaceLengthMM=as.numeric(CostalCarapaceLengthMM),Mean=as.numeric(Mean),Min=as.numeric(Min),Max=as.numeric(Max)) #Convert columns to correct formats
+
+paper5<-ggplot(paper5.df, aes(x=CostalCarapaceLengthMM,y=Mean,ymin=Min,ymax=Max)) +
+  geom_pointrange() +
+  xlab("Costal Carapace Length (mm)") + ylab("Value") +
+  facet_grid(cols=vars(Metric),rows=vars(Species)) +
+  theme(plot.background=element_rect(fill="white",colour=NA),
+        panel.background=element_rect(fill='white',colour="gray30"),
+        panel.grid=element_line(colour='gray70'))
+```
